@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:treinapassarinhos/fileUtils.dart';
 
 void main() {
@@ -30,50 +31,9 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _initializePlayer();
+    _requestPermission();
+    _buildPlaylist();
     _initializeTimer();
-  }
-
-  Future<void> _initializePlayer() async {
-    try {
-      await loadFiles();
-      await _setAudioSource(_audioUrls);
-      await _player.setLoopMode(LoopMode.all);
-      await _player.play();
-    } catch (e) {
-      print("Error initializing player: $e");
-    }
-  }
-
-  Future<List<String>> loadFiles() async {
-    _audioUrls = await getAudioFiles().then((files) {
-      print("files ${files}");
-      var minute2 = DateTime
-          .now()
-          .minute;
-      var prefix = (minute2 % 2 == 0) ? "02-" : "07-";
-      var list = files.where((file) => file.split("/").last.startsWith(prefix)).toList();
-      print("list filtro: ${list}");
-      return list;
-    });
-    return _audioUrls;
-  }
-
-  Future<void> _setAudioSource(List<String> urls) async {
-    final audioSources = urls.map((url) => AudioSource.uri(Uri.parse(url), tag: url.split("/").last)).toList();
-    print("audioSources: ${audioSources}");
-    final playlist = ConcatenatingAudioSource(children: audioSources);
-    await _player.setAudioSource(playlist);
-  }
-
-  Future<void> _rebuildPlaylist(List<String> newUrls) async {
-    try {
-      await _player.stop();
-      await _setAudioSource(newUrls);
-      await _player.play();
-    } catch (e) {
-      print("Error rebuilding playlist: $e");
-    }
   }
 
   @override
@@ -84,52 +44,100 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
       ),
       body: Column(
         children: [
-          ElevatedButton(
-            onPressed: _updatePlaylist,
-            child: Text("Rebuild Playlist"),
-          ),
           Expanded(
             child: StreamBuilder<SequenceState>(
               stream: _player.sequenceStateStream.where((state) => state != null).cast<SequenceState>(),
               builder: (context, snapshot) {
-                final sequenceState = snapshot.data;
-                final sequence = sequenceState?.sequence;
-                final currentIndex = sequenceState?.currentIndex;
-                return ListView.builder(
-                  itemCount: sequence?.length ?? 0,
-                  itemBuilder: (context, index) {
-                    final isPlaying = index == currentIndex;
-                    return ListTile(
-                      title: Text(
-                        sequence![index].tag as String,
-                        style: TextStyle(
-                          fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
+                if (_audioUrls.isNotEmpty) {
+                  final sequenceState = snapshot.data;
+                  final sequence = sequenceState?.sequence;
+                  final currentIndex = sequenceState?.currentIndex;
+                  return ListView.builder(
+                    itemCount: sequence?.length ?? 0,
+                    itemBuilder: (context, index) {
+                      final isPlaying = index == currentIndex &&
+                          _audioUrls.isNotEmpty;
+                      return ListTile(
+                        title: Text(
+                          sequence![index].tag as String,
+                          style: TextStyle(
+                            fontWeight: isPlaying ? FontWeight.bold : FontWeight
+                                .normal,
+                          ),
                         ),
-                      ),
-                    );
-                  },
-                );
+                      );
+                    },
+                  );
+                } else {
+                  return Padding(
+                    child: Text("Sem agendamento"),
+                    padding: new EdgeInsets.all(10.0),
+                  );
+                }
               },
             ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          if (_player.playing) {
-            await _player.pause();
-          } else {
-            await _player.play();
-          }
-        },
-        child: Icon(_player.playing ? Icons.pause : Icons.play_arrow),
-      ),
     );
   }
 
-  void _updatePlaylist() async {
-      var newAudioUrls = await loadFiles();
-      await _rebuildPlaylist(newAudioUrls);
+  Future<void> _buildPlaylist() async {
+      await loadFiles().then((value) async {
+        if (value.isNotEmpty) {
+          await _playList();
+        } else {
+          setState(() {
+            _audioUrls = [];
+          });
+          await _player.stop();
+        }
+      });
+  }
+
+  Future<void> _playList() async {
+    try {
+      await _setAudioSource(_audioUrls);
+      await _player.setLoopMode(LoopMode.all);
+      await _player.play();
+    } catch (e) {
+      print("Error rebuilding playlist: $e");
+    }
+  }
+
+  Future<List<String>> loadFiles() async {
+    var allAudioFiles = await getAudioFiles();
+    var newPlaylist = await getScheduledPlaylist();
+
+    List<String> list = [];
+    
+    // newPlaylist.firstWhere((element) {
+    newPlaylist.forEach((element) {
+      var dateTimeNow = DateTime.now();
+      var currentTimestamp = "${(dateTimeNow.hour.toString()).padLeft(2,"0")}${(dateTimeNow.minute.toString()).padLeft(2,"0")}";
+
+      var schedule = element.split(",");
+
+      var startTime = schedule[0].replaceAll(":", "");
+      var endTime = schedule[1].replaceAll(":", "");
+
+      if (currentTimestamp.compareTo(startTime) >= 0 && currentTimestamp.compareTo(endTime) < 0) {
+        var audioTracks = schedule[2].split(";");
+        list = allAudioFiles.where((audio) => audioTracks.contains(audio.split("/").last)).toList();
+      }
+    });
+
+    setState(() {
+      _audioUrls = list;
+    });
+
+    return list;
+  }
+
+  Future<void> _setAudioSource(List<String> urls) async {
+    final audioSources = urls.map((url) => AudioSource.uri(Uri.parse(url), tag: url.split("/").last)).toList();
+    final playlist = ConcatenatingAudioSource(children: audioSources);
+    await _player.setAudioSource(playlist);
   }
 
   @override
@@ -148,8 +156,15 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   Timer createTimer() {
     return Timer.periodic(Duration(seconds: (60 - DateTime.now().second)), (timer) {
       print("Agendamento em execução ${DateTime.now()}");
-      _updatePlaylist();
+      _buildPlaylist();
       _initializeTimer();
     });
+  }
+
+  Future<void> _requestPermission() async {
+    var storageStatus = await Permission.storage.status;
+    if (storageStatus.isDenied) {
+      await Permission.storage.request();
+    }
   }
 }
