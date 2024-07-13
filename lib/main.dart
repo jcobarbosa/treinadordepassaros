@@ -85,7 +85,12 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
   Future<void> _buildPlaylist() async {
       await loadFiles().then((value) async {
         if (value.isNotEmpty) {
-          await _playList();
+          if (!value.every((audio) => _audioUrls.contains(audio))) {
+            setState(() {
+              _audioUrls = value;
+            });
+            await _playList();
+          }
         } else {
           setState(() {
             _audioUrls = [];
@@ -126,10 +131,10 @@ class _AudioPlayerScreenState extends State<AudioPlayerScreen> {
         list = allAudioFiles.where((audio) => audioTracks.contains(audio.split("/").last)).toList();
       }
     });
-
-    setState(() {
-      _audioUrls = list;
-    });
+    //
+    // setState(() {
+    //   _audioUrls = list;
+    // });
 
     return list;
   }
